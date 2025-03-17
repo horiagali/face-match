@@ -1,9 +1,11 @@
 # face-match
-Comparing faces using vectorization
-
+Classifiyng faces to 6 emotions.
 # image-source
 
-If you use this dataset in your research work, please cite
+I don't own the images, I have taken them from here
+https://www.kaggle.com/competitions/challenges-in-representation-learning-facial-expression-recognition-challenge/data
+
+To run clone and add the test.csv and train.csv from the link to src\main\resources\faces
 
 "Challenges in Representation Learning: A report on three machine learning
 contests." I Goodfellow, D Erhan, PL Carrier, A Courville, M Mirza, B
