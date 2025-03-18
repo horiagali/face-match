@@ -15,3 +15,5 @@ M Popescu, C Grozea, J Bergstra, J Xie, L Romaszko, B Xu, Z Chuang, and
 Y. Bengio. arXiv 2013.
 
 See fer2013.bib for a bibtex entry.
+
+mvn javafx:run
