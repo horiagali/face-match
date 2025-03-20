@@ -1,66 +1,73 @@
 import os
-import matplotlib.pyplot as plt
+import json
 import numpy as np
+import matplotlib.pyplot as plt
 from tqdm import tqdm
-import pandas as pd
-from Data_loader import load_and_preprocess_data  # Corrected import
-
+from Data_loader import load_and_preprocess_data
 from emotion_cnn import EmotionCNN
+
+def load_model(filename):
+    """Loads trained model parameters and hyperparameters from a .npz file."""
+    data = np.load(filename, allow_pickle=True)
+    hyperparams = json.loads(data['hyperparams'].item())
+
+    # Convert filters and biases to numpy arrays
+    filters = [np.array(f) for f in data['filters']]
+    biases = [np.array(b) for b in data['biases']]
+
+    model = EmotionCNN(
+        filters_list=filters,  # Ensure filters are numpy arrays
+        biases_list=biases,    # Ensure biases are numpy arrays
+        fc_weights=data['fc_weights'],
+        fc_bias=data['fc_bias'],
+        step=hyperparams.get("step", 1),
+        pool_size=hyperparams.get("pool_size", 2),
+        pool_step=hyperparams.get("pool_step", 2)
+    )
+    
+    return model, hyperparams
 
 
 
 def main():
     emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
     
-    num_images_to_visualize = 2  # Number of images to visualize and make predictions
-
-    # Hyperparameters
-    K_number = 2
-    K_size = 3
-    step = 1
-    target_size = (48, 48)
-    num_layers = 3
-    output_size = 7  # Number of emotions
-
+    # Load model parameters from file
     script_dir = os.path.dirname(os.path.realpath(__file__))
+    model_path = os.path.join(script_dir, '..', '..','..', '..', 'model_fold_5.npz')
+    
+    # Load model parameters from file
+    cnn_model, hyperparams = load_model(model_path)
+
+    # Set parameters from the model
+    target_size = (48, 48)
+
+    # Load test dataset
     data_folder = os.path.join(script_dir, '..', '..', 'resources', 'faces')
     test_csv_path = os.path.join(data_folder, 'data.csv')
+    images_test, labels_test = load_and_preprocess_data(test_csv_path, usage_type='PrivateTest', target_size=target_size)
 
-    if not os.path.exists(test_csv_path):
-        print(f"The file {test_csv_path} does not exist.")
-        return
+    # Select the first 10 images dynamically
+    num_images_to_visualize = min(100, len(images_test))
 
-    # Load and preprocess the test data
-    images_test, _ = load_and_preprocess_data(test_csv_path, usage_type='PrivateTest', target_size=target_size)
-    
-    # Only visualize the first 10 images
     images_to_visualize = images_test[:num_images_to_visualize]
+    labels_to_visualize = labels_test[:num_images_to_visualize]
 
-    # Initialize random filters and biases for each layer
-    filters_list = [np.random.randn(K_size, K_size) for _ in range(num_layers)]
-    biases_list = [np.random.randn() for _ in range(num_layers)]  
+    correct_predictions = 0
 
-    # Initialize the EmotionCNN model
-    cnn_model = EmotionCNN(filters_list, biases_list, np.random.randn(filters_list[0].size * len(filters_list), output_size), np.random.randn(output_size))
+    for idx, (img, true_label) in enumerate(zip(images_to_visualize, labels_to_visualize)):
+        # Pass image through the CNN model
+        probabilities = cnn_model.forward(img)  
+        predicted_label = np.argmax(probabilities)
+        correct_predictions += (predicted_label == np.argmax(true_label))
 
-    # Visualize images and make predictions 
-    feature_vectors = []
-
-    for idx, img in enumerate(images_to_visualize):
+        # Plot image with predicted probabilities and true label
         fig, ax = plt.subplots(1, 2, figsize=(8, 4))
 
         ax[0].imshow(img.reshape(48, 48), cmap='gray')
-        ax[0].set_title(f'Image {idx + 1}')
+        ax[0].set_title(f'True: {emotions[np.argmax(true_label)]}\nPredicted: {emotions[predicted_label]}')
         ax[0].axis('off')
 
-        # Pass image through the CNN model
-        feature_maps, _ = cnn_model.apply_cnn_blocks(img)
-        fc_output = cnn_model.fully_connected_layer(feature_maps)
-        probabilities = cnn_model.softmax(fc_output)
-
-        feature_vectors.append(probabilities)
-
-        # Plot the predicted probabilities for each emotion
         ax[1].bar(emotions, probabilities * 100, color='blue')
         ax[1].set_title('Predicted Probabilities')
         ax[1].set_ylabel('Probability (%)')
@@ -69,35 +76,12 @@ def main():
         plt.tight_layout()
         plt.show()
 
-        # Print probabilities
-        print(f"Image {idx + 1} probabilities:")
-        for emotion, prob in zip(emotions, probabilities):
-            print(f"  {emotion}: {prob * 100:.2f}%")
-        print()
+    # Print probabilities
+    print(f"Image {idx + 1} probabilities:")
+    for emotion, prob in zip(emotions, probabilities):
+        print(f"  {emotion}: {prob * 100:.2f}%")
+    print()
 
-    feature_vectors = np.array(feature_vectors)
-
-    # Load the full PrivateTest dataset for final predictions
-    icml_csv_path = os.path.join(script_dir, '..', '..', 'resources', 'faces', 'icml_face_data.csv')
-    images_all, labels_all = load_and_preprocess_data(icml_csv_path, usage_type='Training', target_size=target_size)
-
-    # Initialize counters for accuracy calculation
-    correct_predictions = 0
-
-    # Make predictions on all the images in icml_face_data.csv
-    for img, true_label in tqdm(zip(images_all, labels_all), total=len(images_all), desc="Processing Images"):
-        # Pass image through the CNN model for final predictions
-        feature_maps, _ = cnn_model.apply_cnn_blocks(img)
-        fc_output = cnn_model.fully_connected_layer(feature_maps)
-        probabilities = cnn_model.softmax(fc_output)
-
-        predicted_label = emotions[np.argmax(probabilities)]
-        if predicted_label == true_label:
-            correct_predictions += 1
-
-    # Calculate precision (accuracy)
-    precision = (correct_predictions / len(labels_all)) * 100
-    print(f"Model precision on PrivateTest data: {precision:.2f}%")
 
 if __name__ == "__main__":
     main()
