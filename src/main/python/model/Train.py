@@ -23,36 +23,39 @@ def save_model(model, hyperparams, filename):
              hyperparams=hyperparams_json)
 
 
-
-def k_fold_cross_validation(csv_path, k=5, epochs=10, learning_rate=0.01, 
-                            K_size=3, num_layers=3, output_size=7):
+def k_fold_cross_validation(csv_path, k, epochs, learning_rate=0.02, 
+                            K_size=3, num_layers=2
+                            , output_size=7):
     images, labels = load_and_preprocess_data(csv_path, "Training")
     kf = KFold(n_splits=k, shuffle=True, random_state=42)
 
-    images = images[:1000]
-    #TODO remove hardcoded limitwhen done
+    images = images[:5]
+    #TODO remove hardcoded limit when done
 
     fold_accuracies = []
     all_train_losses = []
     all_test_losses = []
 
+    # He initialization for filters
+    filters_list = [np.random.normal(0, np.sqrt(2. / (K_size * K_size)), (K_size, K_size)) for _ in range(num_layers)]
 
-    filters_list = [np.random.randn(K_size, K_size) for _ in range(num_layers)]
-    biases_list = [np.random.randn() for _ in range(num_layers)]
-    fc_weights = np.random.randn(16, output_size)
-    fc_bias = np.random.randn(output_size)
+    # Biases can still be initialized to zero or small random values
+    biases_list = [np.zeros(1) for _ in range(num_layers)]  # Or np.random.normal(0, 0.1) for small random values
+
+    # Fully connected layer weights and biases (can still be initialized randomly)
+    fc_weights = np.random.normal(0, np.sqrt(2. / (K_size * K_size)), (100, output_size))
+    fc_bias = np.zeros(output_size)
+    machine = EmotionCNN(filters_list, biases_list, fc_weights, fc_bias)
+
     
-    for fold, (train_idx, val_idx) in enumerate(tqdm(kf.split(images), total=k, desc="K-Fold Cross Validation", unit="fold"), 1):
+    for fold, (train_idx, val_idx) in enumerate(kf.split(images), 1):  # Removed tqdm here
         print(f"\n--- Fold {fold}/{k} ---")
         X_train, X_val = images[train_idx], images[val_idx]
         y_train, y_val = labels[train_idx], labels[val_idx]
 
-   
-
-        machine = EmotionCNN(filters_list, biases_list, fc_weights, fc_bias)
         
         train_losses, test_losses = [], []
-        for epoch in tqdm(range(epochs), desc=f"Training Fold {fold}", unit="epoch"):
+        for epoch in tqdm(range(epochs), desc=f"Training Fold {fold}", unit="epoch"):  # Keep tqdm in the epoch loop
             epoch_train_loss = 0
             for img, label in zip(X_train, y_train):
                 preds = machine.forward(img)
@@ -109,16 +112,14 @@ def k_fold_cross_validation(csv_path, k=5, epochs=10, learning_rate=0.01,
     plt.show()
 
 
-
 def main():
-    
     # Get the absolute path to the CSV file based on the script's location
     script_dir = os.path.dirname(os.path.realpath(__file__))
     data_folder = os.path.join(script_dir, '..', '..', 'resources', 'faces')
     csv_path = os.path.join(data_folder, 'data.csv')
     # Perform K-fold cross-validation with training, loss-curve plotting, and model saving
-    k_fold_cross_validation(csv_path, k=5, epochs=10, learning_rate=0.01,
-                            K_size=3, num_layers=3, output_size=7)
+    k_fold_cross_validation(csv_path, k=5, epochs=10, learning_rate=0.02,
+                            K_size=3, num_layers=2, output_size=7)
 
 
 if __name__ == "__main__":

@@ -6,26 +6,33 @@ from tqdm import tqdm
 from Data_loader import load_and_preprocess_data
 from emotion_cnn import EmotionCNN
 
-def load_model(filename):
-    """Loads trained model parameters and hyperparameters from a .npz file."""
+def load_model(filename, K_size=3, num_layers=4, output_size=7):
+    """Loads model parameters and hyperparameters from a .npz file, but always uses random filters."""
     data = np.load(filename, allow_pickle=True)
     hyperparams = json.loads(data['hyperparams'].item())
 
-    # Convert filters and biases to numpy arrays
+    # Load filters and biases for each convolutional layer
     filters = [np.array(f) for f in data['filters']]
     biases = [np.array(b) for b in data['biases']]
 
+    # Initialize the model with loaded filters and biases
     model = EmotionCNN(
-        filters_list=filters,  # Ensure filters are numpy arrays
-        biases_list=biases,    # Ensure biases are numpy arrays
-        fc_weights=data['fc_weights'],
-        fc_bias=data['fc_bias'],
-        step=hyperparams.get("step", 1),
-        pool_size=hyperparams.get("pool_size", 2),
-        pool_step=hyperparams.get("pool_step", 2)
+        K_size=K_size,
+        num_layers=num_layers,
+        output_size=output_size
     )
+
+    # Assign the loaded filters and biases to the model
+    for i in range(num_layers):
+        model.conv_params[i]["W"] = filters[i]
+        model.conv_params[i]["b"] = biases[i]
+
+    # Load the fully connected layer weights and biases
+    model.fc1_W = data['fc_weights']
+    model.fc1_b = data['fc_bias']
     
-    return model, hyperparams
+    # Return the model with loaded parameters
+    return model
 
 
 
@@ -37,7 +44,7 @@ def main():
     model_path = os.path.join(script_dir, '..', '..','..', '..', 'model_fold_5.npz')
     
     # Load model parameters from file
-    cnn_model, hyperparams = load_model(model_path)
+    cnn_model = load_model(model_path)
 
     # Set parameters from the model
     target_size = (48, 48)
@@ -48,7 +55,8 @@ def main():
     images_test, labels_test = load_and_preprocess_data(test_csv_path, usage_type='PrivateTest', target_size=target_size)
 
     # Select the first 10 images dynamically
-    num_images_to_visualize = min(100, len(images_test))
+    num_images = 5
+    num_images_to_visualize = min(num_images, len(images_test))
 
     images_to_visualize = images_test[:num_images_to_visualize]
     labels_to_visualize = labels_test[:num_images_to_visualize]
@@ -56,6 +64,7 @@ def main():
     correct_predictions = 0
 
     for idx, (img, true_label) in enumerate(zip(images_to_visualize, labels_to_visualize)):
+        
         # Pass image through the CNN model
         probabilities = cnn_model.forward(img)  
         predicted_label = np.argmax(probabilities)
