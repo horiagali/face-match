@@ -1,243 +1,561 @@
 import numpy as np
-import matplotlib.pyplot as plt
 
-def visualize_layer_output(layer_name, A):
-    """
-    Function to visualize the output of a layer.
-    Arguments:
-    - layer_name: Name of the layer (for labeling the plot)
-    - A: The output of the layer (feature map)
-    """
-    # Check if the feature map has only one channel or multiple
-    if len(A.shape) == 3:  # If it's a 3D array (height, width, channels)
-        num_features = A.shape[-1]
-    else:  # If it's a 2D array (height, width)
-        num_features = 1
+# ---------- Helper Functions ----------
 
-    # Plot each feature map
-    plt.figure(figsize=(10, 10))
-    for i in range(num_features):
-        plt.subplot(1, num_features, i + 1)
-        if num_features == 1:
-            plt.imshow(A, cmap='gray')  # If 2D, directly plot the 2D array
-        else:
-            plt.imshow(A[:, :, i], cmap='gray')  # If 3D, plot each channel
-        plt.title(f"{layer_name} feature map {i+1}")
-        plt.axis('off')
-    plt.show()
+def relu_forward(Z):
+    A = np.maximum(0, Z)
+    cache = Z
+    return A, cache
+
+def relu_backward(dA, cache):
+    Z = cache
+    dZ = dA * (Z > 0)
+    return dZ
+
+
+
+
+def dropout_backward(dA_drop, mask, dropout_rate):
+    dA = dA_drop * mask
+    return dA
+
+import numpy as np
+
+def conv2d_backward(dout, x, filters, stride=1, padding="same"):
+    batch_size, in_h, in_w, in_c = x.shape
+    out_c, k_h, k_w, _ = filters.shape  # filters are now (out_c, k_h, k_w, in_c)
+
+    if padding == "same":
+        pad_h = ((in_h - 1) * stride + k_h - in_h) // 2
+        pad_w = ((in_w - 1) * stride + k_w - in_w) // 2
+    else:
+        pad_h = pad_w = 0
+
+    x_padded = np.pad(x, ((0, 0), (pad_h, pad_h), (pad_w, pad_w), (0, 0)), mode='constant')
+    dx_padded = np.zeros_like(x_padded)
+    dfilters = np.zeros_like(filters)
+    dbias = np.zeros(out_c)
+
+    out_h, out_w = dout.shape[1], dout.shape[2]
+
+    for b in range(batch_size):
+        for i in range(out_h):
+            for j in range(out_w):
+                for oc in range(out_c):
+                    h_start = i * stride
+                    w_start = j * stride
+
+                    # Access filter correctly: filters (out_c, k_h, k_w, in_c)
+                    patch = x_padded[b, h_start:h_start + k_h, w_start:w_start + k_w, :]  # (k_h, k_w, in_c)
+
+                    # Update dx_padded and dfilters based on filter shape
+                    dx_padded[b, h_start:h_start + k_h, w_start:w_start + k_w, :] += filters[oc] * dout[b, i, j, oc]
+                    dfilters[oc] += patch * dout[b, i, j, oc]
+                    dbias[oc] += dout[b, i, j, oc]
+
+    # Unpad dx_padded to get dx
+    dx = dx_padded[:, pad_h:pad_h + in_h, pad_w:pad_w + in_w, :] if padding == "same" else dx_padded
+    return dx, dfilters, dbias
+
+
+
+def max_pool(x, size=2, stride=2):
+    # Big debug print with an empty row at the start
+    # print("\n\n" + "="*50)
+    # print(f"Input x shape: {x.shape}")
+    # print("="*50 + "\n")
+    
+    # Extract the shape of the input
+    batch, height, width, channels = x.shape
+    # print(f"Batch: {batch}, Channels: {channels}, Height: {height}, Width: {width}")
+
+    # Calculate the output dimensions
+    out_h = (height - size) // stride + 1
+    out_w = (width - size) // stride + 1
+    # print(f"Output Height: {out_h}, Output Width: {out_w}")
+
+    # Initialize the output and mask arrays
+    out = np.zeros((batch, out_h, out_w, channels))
+    mask = np.zeros_like(x)
+
+    # Apply max pooling
+    for b in range(batch):
+        for c in range(channels):
+            for i in range(out_h):
+                for j in range(out_w):
+                    h_start = i * stride
+                    w_start = j * stride
+                    window = x[b,  h_start:h_start+size, w_start:w_start+size,c]
+                    max_val = np.max(window)
+                    out[b, i, j,c] = max_val
+                    mask[b, h_start:h_start+size, w_start:w_start+size,c] += (window == max_val)
+    
+    # Big debug print with an empty row at the end
+    # print("\n\n" + "="*50)
+    # print(f"Output shape: {out.shape}")
+    # print("="*50 + "\n")
+    
+    return out, mask
+
+
+def max_pool_backward(dout, mask, size=2, stride=2):
+    dx = np.zeros_like(mask)
+    batch, out_h, out_w , channels = dout.shape  
+    for b in range(batch):
+        for c in range(channels):
+            for i in range(out_h):
+                for j in range(out_w):
+                    h_start = i * stride
+                    w_start = j * stride
+                    dx[b,  h_start:h_start+size, w_start:w_start+size,c] += (
+                        mask[b,  h_start:h_start+size, w_start:w_start+size,c] * dout[b,  i, j,c]
+                    )
+    return dx
+
+
+
+
+def batch_norm_backward(dA_out, cache):
+    A, mean, var, A_norm, gamma, beta, epsilon = cache
+    m = A.shape[0] * A.shape[1] * A.shape[2]  # total elements per channel
+
+    # Gradients of beta and gamma along axes (0, 1, 2)
+    dgamma = np.sum(dA_out * A_norm, axis=(0, 1, 2))  # shape: (C,)
+    dbeta = np.sum(dA_out, axis=(0, 1, 2))            # shape: (C,)
+
+    dA_norm = dA_out * gamma  # broadcasting over NHWC
+    dvar = np.sum(dA_norm * (A - mean) * -0.5 * (var + epsilon) ** (-1.5), axis=(0, 1, 2), keepdims=True)
+    dmean = np.sum(dA_norm * -1 / np.sqrt(var + epsilon), axis=(0, 1, 2), keepdims=True) + \
+            dvar * np.sum(-2 * (A - mean), axis=(0, 1, 2), keepdims=True) / m
+    dA = dA_norm / np.sqrt(var + epsilon) + dvar * 2 * (A - mean) / m + dmean / m
+
+    return dA, dgamma, dbeta
+
+
+
+
+
+
+def dropout_forward(x, drop_prob):
+    mask = (np.random.rand(*x.shape) > drop_prob).astype(np.float32)
+    return x * mask / (1.0 - drop_prob), mask
+
+def relu(x):
+    return np.maximum(0, x)
+
+def relu_derivative(x):
+    return (x > 0).astype(x.dtype)
+
+
+
+def softmax(x):
+    e_x = np.exp(x - np.max(x, axis=1, keepdims=True))
+    return e_x / np.sum(e_x, axis=1, keepdims=True)
+
+def conv2d(x, filters, bias, stride=1, padding="same"):
+    """
+    x: shape (batch_size, height, width, in_channels)
+    filters: shape (out_channels, kernel_height, kernel_width, in_channels)
+    bias: shape (out_channels,)
+    Returns: output of shape (batch_size, height, width, out_channels)
+    """
+
+    # Extract input shape
+    batch_size, in_h, in_w, in_c = x.shape  # input channels are the last dimension
+    out_c, k_h, k_w, _ = filters.shape  # output channels, kernel height, kernel width, input channels of filter
+
+    # Debug print for input and filter shapes
+    # print(f"Input shape: {x.shape}")
+    # print(f"Filter shape: {filters.shape}")
+    # print(f"Initial input channels: {in_c}, Output channels: {out_c}, Kernel size: ({k_h}, {k_w})")
+
+    # Padding calculation
+    if padding == "same":
+        pad_h = (k_h - 1) // 2
+        pad_w = (k_w - 1) // 2
+    else:
+        pad_h = pad_w = 0
+
+    # Debug print for padding values
+    # print(f"Padding applied: height={pad_h}, width={pad_w}")
+
+    # Padding the input
+    x_padded = np.pad(x, ((0, 0), (pad_h, pad_h), (pad_w, pad_w), (0, 0)), mode="constant")
+
+    # Debug print for padded input shape
+    # print(f"Padded input shape: {x_padded.shape}")
+
+    # Output dimension calculation
+    out_h = (in_h + 2 * pad_h - k_h) // stride + 1
+    out_w = (in_w + 2 * pad_w - k_w) // stride + 1
+
+    # Debug print for output dimensions
+    # print(f"Output dimensions (height, width): ({out_h}, {out_w})")
+
+    # Ensure that output dimensions are positive
+    if out_h <= 0 or out_w <= 0:
+        raise ValueError(f"Output dimensions are too small: out_h={out_h}, out_w={out_w}.")
+
+    # Initialize output tensor
+    out = np.zeros((batch_size, out_h, out_w, out_c))  
+
+    # Debug print for initialized output shape
+    # print(f"Initialized output shape: {out.shape}")
+
+    # Convolution operation
+    for b in range(batch_size):
+        for oc in range(out_c):  # loop over output channels
+            for i in range(out_h):
+                for j in range(out_w):
+                    h_start = i * stride
+                    w_start = j * stride
+
+                    # Perform convolution by summing over all input channels
+                    region = x_padded[b, h_start:h_start + k_h, w_start:w_start + k_w, :]
+
+                    # Debug print for the region and its shape
+                
+
+                    # Apply the filter to the region (sum over input channels)
+                    out[b, i, j, oc] = np.sum(region * filters[oc, :, :, :], axis=(0, 1, 2)) + bias[oc]  # apply filter to the region
+
+                    # Debug print for output value at (b, i, j, oc)
+
+    return out
+
+
+
+
+
+
+
+
+def maxpool_forward(A, pool_size=2, stride=2):
+    H, W, C = A.shape  # TODO check if right
+    H_out = (H - pool_size) // stride + 1
+    W_out = (W - pool_size) // stride + 1
+    A_pool = np.zeros((H_out, W_out, C))
+    cache = {}
+    for c in range(C):
+        for i in range(H_out):
+            for j in range(W_out):
+                h_start = i * stride
+                h_end = h_start + pool_size
+                w_start = j * stride
+                w_end = w_start + pool_size
+                A_slice = A[h_start:h_end, w_start:w_end, c]
+                A_pool[i, j, c] = np.max(A_slice)
+                # Save mask for backpropagation
+                mask = (A_slice == np.max(A_slice))
+                cache[(i, j, c)] = (mask, (h_start, h_end, w_start, w_end))
+    cache["A_prev"] = A  # Save previous layer's output in the cache
+    return A_pool, cache
+
+
+def maxpool_backward(dA, pool_cache, A_shape, pool_size=2, stride=2):
+    dA_prev = np.zeros(A_shape)
+    H_out, W_out, C = dA.shape  # TODO check if right
+    for c in range(C):
+        for i in range(H_out):
+            for j in range(W_out):
+                mask, (h_start, h_end, w_start, w_end) = pool_cache[(i, j, c)]
+                dA_prev[h_start:h_end, w_start:w_end, c] += mask * dA[i, j, c]
+    return dA_prev
+
+def flatten_forward(A):
+    shape = A.shape
+    A_flat = A.flatten()
+    return A_flat, shape
+
+def flatten_backward(dA_flat, shape):
+    return dA_flat.reshape(shape)
+
+def dense_forward(A, W, b):
+    Z = np.dot(A, W) + b
+    cache = A
+    return Z, cache
+
+def dense_backward(dZ, cache, W):
+    A = cache  # shape (n,)
+    dW = np.outer(A, dZ)
+    db = dZ.copy()
+    dA = np.dot(dZ, W.T)
+    return dA, dW, db
+
+def conv_forward(A_prev, W, b, stride=1, padding="same"):
+    # A_prev shape: (H, W, C)
+    # W shape: (f, f, C, F)
+    # b shape: (F,)
+    f = W.shape[0]
+    if padding == "same":
+        pad = (f // 2) if f % 2 == 0 else (f // 2)
+    else:
+        pad = 0
+
+    A_pad = np.pad(A_prev, ((pad, pad), (pad, pad), (0, 0)), mode='constant', constant_values=0)
+    H, W_prev, C = A_prev.shape
+    H_out = int((H + 2*pad - f) / stride) + 1
+    W_out = int((W_prev + 2*pad - f) / stride) + 1
+    F = W.shape[3]
+    Z = np.zeros((H_out, W_out, F))
+    for i in range(H_out):
+        for j in range(W_out):
+            h_start = i * stride
+            h_end = h_start + f
+            w_start = j * stride
+            w_end = w_start + f
+            A_slice = A_pad[h_start:h_end, w_start:w_end, :]
+            for k in range(F):
+                Z[i, j, k] = np.sum(A_slice * W[:, :, :, k]) + b[k]
+    cache = (A_prev, W, b, stride, pad, A_pad)
+    return Z, cache
+
+def conv_backward(dZ, cache):
+    A_prev, W, b, stride, pad, A_pad = cache
+    f = W.shape[0]
+    H_out, W_out, F = dZ.shape
+    dA_pad = np.zeros_like(A_pad)
+    dW = np.zeros_like(W)
+    db = np.zeros_like(b)
+    for i in range(H_out):
+        for j in range(W_out):
+            h_start = i * stride
+            h_end = h_start + f
+            w_start = j * stride
+            w_end = w_start + f
+            A_slice = A_pad[h_start:h_end, w_start:w_end, :]
+
+
+
+            for k in range(F):
+
+               
+                
+                dW[:, :, :, k] += A_slice * dZ[i, j, k]
+                dA_pad[h_start:h_end, w_start:w_end, :] += W[:, :, :, k] * dZ[i, j, k]
+                db[k] += dZ[i, j, k]
+    if pad != 0:
+        dA_prev = dA_pad[pad:-pad, pad:-pad, :]
+    else:
+        dA_prev = dA_pad
+    return dA_prev, dW, db
+
+def batch_norm_forward(A, gamma, beta, epsilon=1e-5):
+
+    # print(f"Shape of A: {A.shape}")
+    mean = np.mean(A, axis=(0, 1), keepdims=True)
+    var = np.var(A, axis=(0, 1), keepdims=True)
+    A_norm = (A - mean) / np.sqrt(var + epsilon)
+    A_out = gamma * A_norm + beta
+    cache = (A, mean, var, A_norm, gamma, beta, epsilon)
+    return A_out, cache
+
+
+
+
+import numpy as np
+
+
+
+
+
+# ---------- EmotionCNN Class ----------
+import numpy as np
 
 class EmotionCNN:
-    def __init__(self, filters_list, biases_list, fc_weights, fc_bias, step=1, pool_size=2, pool_step=2):
-        self.filters_list = filters_list      # List of convolution filters (one per layer)
-        self.biases_list = biases_list        # List of biases for each conv layer
-        self.fc_weights = fc_weights          # Fully connected layer weights
-        self.fc_bias = fc_bias                # Fully connected layer bias
-        self.step = step                      # Stride for convolution
-        self.pool_size = pool_size            # Pooling window size
-        self.pool_step = pool_step            # Stride for pooling
+    def __init__(self, filters_list, biases_list, fc_weights, fc_bias, gamma, beta,
+                 output_weights, output_bias, step=1, pool_size=2, pool_step=2, 
+                 dropout_rate_conv=0.4, dropout_rate_fc=0.3):
+        # Initialize all the parameters
+        self.filters_list = filters_list
+        self.biases_list = biases_list
+        self.fc_weights = fc_weights  # List of weights for fully connected layers
+        self.fc_bias = fc_bias        # List of biases for fully connected layers
+        self.output_weights = output_weights  # Weights for the output layer
+        self.output_bias = output_bias        # Bias for the output layer
+        self.gamma = gamma            # List of gamma values for batch normalization
+        self.beta = beta              # List of beta values for batch normalization
+        self.step = step              # Stride for convolution
+        self.pool_size = pool_size    # Pooling window size
+        self.pool_step = pool_step    # Pooling stride
+        self.dropout_rate_conv = dropout_rate_conv  # Dropout rate for conv layers
+        self.dropout_rate_fc = dropout_rate_fc      # Dropout rate for fully connected layers
 
-        # Track filter evolution
-        self.filter_history = [[] for _ in range(len(filters_list))]
+    def forward(self, x, training=True):
+        self.cache = {'conv': [], 'bn': [], 'dropout': []}
+        out = x
 
-    # --------- Forward functions with caching ----------
-    def conv_forward(self, A_prev, W, b):
-        A_prev = A_prev.astype(np.float64)  # Cast to float64
-        H_prev, W_prev = A_prev.shape  # A_prev is now 2D (height, width)
-        f = W.shape[0]  # filter size
-        H_out = int((H_prev - f) / self.step) + 1
-        W_out = int((W_prev - f) / self.step) + 1
+        # --- Conv layers (with ReLU, BN, Pooling, Dropout) ---
+        for i in range(4):
+            filt = self.filters_list[i]
+            bias = self.biases_list[i]
+            gamma = self.gamma[i]
+            beta = self.beta[i]
 
-        Z = np.zeros((H_out, W_out), dtype=np.float64)  # Ensure Z is float64
-        
-        for i in range(H_out):
-            for j in range(W_out):
-                vert_start = i * self.step
-                vert_end = vert_start + f
-                horiz_start = j * self.step
-                horiz_end = horiz_start + f
-                A_slice = A_prev[vert_start:vert_end, horiz_start:horiz_end]
-                Z[i, j] = np.sum(A_slice * W) + b
-        cache = (A_prev, W, b, self.step)
-        return Z, cache
+            # print(f"\nLayer {i + 1}")
+            # print(f"Input shape: {out.shape}")
+            # print(f"Filter shape: {filt.shape}")
+            # print(f"Bias shape: {bias.shape}")
+            # print(f"Gamma shape: {gamma.shape}, Beta shape: {beta.shape}")
+            # print(f"Starting a new  conv2d with shape : {out.shape}")
+            self.cache['conv_input'] = self.cache.get('conv_input', []) + [out.copy()]
 
-    def elu_forward(self, Z, alpha=1.0):
-        """
-        Apply the Exponential Linear Unit (ELU) activation function.
-        Arguments:
-        - Z: Input array (e.g., output of convolution)
-        - alpha: The constant that defines the steepness of the negative part
-        Returns:
-        - A: Activated output
-        """
-        A = np.where(Z > 0, Z, alpha * (np.exp(Z) - 1))  # ELU activation
-        cache = Z
-        return A, cache
+            out = conv2d(out, filt, bias, stride=self.step, padding="same")
+            # print(f"After conv2d: {out.shape}")
 
-    def pool_forward(self, A_prev, pool_size, stride):
-        A_prev = A_prev.astype(np.float64)  # Cast to float64
-        H_prev, W_prev = A_prev.shape
-        H_out = int((H_prev - pool_size) / stride) + 1
-        W_out = int((W_prev - pool_size) / stride) + 1
-        A = np.zeros((H_out, W_out), dtype=np.float64)  # Ensure A is float64
-        cache = {"A_prev": A_prev, "pool_size": pool_size, "stride": stride}
-        for i in range(H_out):
-            for j in range(W_out):
-                vert_start = i * stride
-                vert_end = vert_start + pool_size
-                horiz_start = j * stride
-                horiz_end = horiz_start + pool_size
-                A_slice = A_prev[vert_start:vert_end, horiz_start:horiz_end]
-                A[i, j] = np.max(A_slice)
-        return A, cache
+            out, bn_cache = batch_norm_forward(out, gamma, beta)
+            self.cache['bn'].append(bn_cache)
 
-    def fc_forward(self, A_flat):
-        Z = np.dot(A_flat, self.fc_weights) + self.fc_bias
-        cache = A_flat  # cache the flattened input
-        return Z, cache
+            # Store pre-ReLU activation
+            self.cache['pre_relu'] = self.cache.get('pre_relu', []) + [out.copy()]  # Save before ReLU
 
-    def forward(self, image):
-        image = image.astype(np.float64)  # Ensure input image is float64
-        self.cache = {}  # dictionary to hold caches for each layer
-        A = image
-        self.cache["A0"] = A
-        L = len(self.filters_list)
-        for l in range(L):
-            # Convolution forward
-            Z_conv, cache_conv = self.conv_forward(A, self.filters_list[l], self.biases_list[l])
-            self.cache[f"conv_{l}"] = cache_conv
-            # visualize_layer_output(f"conv_{l}", Z_conv)  # Visualize convolution output
+            out = relu(out)
 
-            # Track filter evolution
-            self.filter_history[l].append(self.filters_list[l].copy())  # Save snapshot of filter
-            # ELU forward
-            A_elu, cache_elu = self.elu_forward(Z_conv)
-            self.cache[f"elu_{l}"] = cache_elu
-            # visualize_layer_output(f"elu_{l}", A_elu)  # Visualize ELU activation output
+            # print(f"After ReLU: {out.shape}")
 
-            # Pooling forward
-            A_pool, cache_pool = self.pool_forward(A_elu, self.pool_size, self.pool_step)
-            self.cache[f"pool_{l}"] = cache_pool
-            A = A_pool  # output becomes input for next layer
-            # visualize_layer_output(f"pool_{l}", A_pool)  # Visualize pooling output
+            out, pool_cache = max_pool(out, self.pool_size, self.pool_step)  # TODO shouldn affect no of channels, shpuld have size
+            # print(f"After max_pool: {out.shape}")
+            self.cache['conv'].append((out, pool_cache))
+
+            if training:
+                out, drop_mask = dropout_forward(out, self.dropout_rate_conv)
+                # print(f"After dropout (training): {out.shape}")
+                self.cache['dropout'].append(drop_mask)
+            else:
+                # print(f"After dropout (inference): {out.shape}")
+                self.cache['dropout'].append(None)
 
 
-        self.cache["A_final"] = A  # final conv block output
-        # Flatten
-        A_flat = A.flatten()
-        self.cache["A_flat"] = A_flat
-        # Fully connected forward
-        Z_fc, cache_fc = self.fc_forward(A_flat)
-        self.cache["fc"] = cache_fc
-        self.cache["Z_fc"] = Z_fc
-        # Softmax
-        probabilities = self.softmax(Z_fc)
-        return probabilities
+            # Flatten
+        self.flatten_shape = out.shape
+        # print(f"Flattened shape: {self.flatten_shape}")
+        out = out.reshape(out.shape[0], -1)
+        self.cache['flat'] = out  # Save the flattened feature map
 
-    def softmax(self, logits):
-        exp_logits = np.exp(logits - np.max(logits))
-        return exp_logits / np.sum(exp_logits)
+        # print(f"Shape after flattening: {out.shape}")
 
-    def cross_entropy_loss(self, predictions, labels):
-        epsilon = 1e-15  # Small constant to prevent log(0)
-        predictions = np.clip(predictions, epsilon, 1. - epsilon)  # Clip predictions to avoid 0 or 1 values
-        m = labels.shape[0]
-        loss = -np.sum(labels * np.log(predictions)) / m
-        return loss
+        # List of weights and biases for the fully connected layers
+        fc_weights = [self.fc_weights[0], self.fc_weights[1]]
+        fc_bias = [self.fc_bias[0], self.fc_bias[1]]
+        a = out  # Start with the flattened output
 
-    # --------- Backward functions for each layer ----------
-    def conv_backward(self, dZ, cache):
-        A_prev, W, b, stride = cache
-        A_prev = A_prev.astype(np.float64)  # Cast A_prev to float64
-        W = W.astype(np.float64)            # Cast W to float64
-        f = W.shape[0]
-        H_prev, W_prev = A_prev.shape
-        H_out, W_out = dZ.shape
+        # Iterate over FC layers
+        for i in range(2):
+            z = a @ fc_weights[i] + fc_bias[i]
+            # print(f"Shape after FC layer {i+1} (z): {z.shape}")
+            a = relu(z)
+            # print(f"Shape after ReLU activation (a): {a.shape}")
+            
+            # Apply dropout if training
+            if training:
+                a, drop_mask = dropout_forward(a, self.dropout_rate_fc)
+                # print(f"Shape after dropout (a): {a.shape}")
+            else:
+                drop_mask = None
+            
+            # Store cache for backpropagation
+            self.cache[f'z{i+1}'] = z
+            self.cache[f'a{i+1}'] = a
+            self.cache[f'drop{i+1}'] = drop_mask
 
-        dA_prev = np.zeros_like(A_prev, dtype=np.float64)  # Ensure dA_prev is float64
-        dW = np.zeros_like(W, dtype=np.float64)            # Ensure dW is float64
-        db = 0.0                                           # Bias gradient should be a float
+        # --- Output layer ---
+        scores = a @ self.output_weights + self.output_bias
+        # print(f"Shape after output layer (scores): {scores.shape}")
+        probs = softmax(scores)
+        # print(f"Shape after softmax (probs): {probs.shape}")
 
-        for i in range(H_out):
-            for j in range(W_out):
-                vert_start = i * stride
-                vert_end = vert_start + f
-                horiz_start = j * stride
-                horiz_end = horiz_start + f
-                A_slice = A_prev[vert_start:vert_end, horiz_start:horiz_end]
-                dW += dZ[i, j] * A_slice
-                dA_prev[vert_start:vert_end, horiz_start:horiz_end] += dZ[i, j] * W
-                db += dZ[i, j]
-        return dA_prev, dW, db
+        # Cache for backward
+        self.cache.update({
+            'scores': scores, 'probs': probs
+        })
 
-    def elu_backward(self, dA, cache, alpha=1.0):
-        Z = cache
-        dZ = dA * (Z > 0) + alpha * (Z <= 0) * np.exp(Z)  # Derivative of ELU
-        return dZ
+        return probs
 
-    def pool_backward(self, dA, cache):
-        A_prev = cache["A_prev"]
-        pool_size = cache["pool_size"]
-        stride = cache["stride"]
-        H_out, W_out = dA.shape
-        dA_prev = np.zeros_like(A_prev, dtype=np.float64)
 
-        for i in range(H_out):
-            for j in range(W_out):
-                vert_start = i * stride
-                vert_end = vert_start + pool_size
-                horiz_start = j * stride
-                horiz_end = horiz_start + pool_size
-                A_slice = A_prev[vert_start:vert_end, horiz_start:horiz_end]
-                mask = (A_slice == np.max(A_slice))
-                dA_prev[vert_start:vert_end, horiz_start:horiz_end] += mask * dA[i, j]
-        return dA_prev
 
-    def fc_backward(self, dZ, cache):
-        A_flat = cache  # flattened input
-        dW = np.outer(A_flat, dZ).astype(np.float64)  # Ensure dW is float64
-        db = dZ
-        dA_flat = np.dot(self.fc_weights, dZ)
-        return dA_flat, dW, db
+    def backward(self, x, y_true, learning_rate=0.001):
+        grads = {}
 
-    # --------- Full backpropagation through the network ----------
-    def backpropagate(self, image, true_label, learning_rate=0.02):
-        # Forward pass (and cache all intermediate values)
-        probabilities = self.forward(image)
-        # One-hot encode true label (assumes number of classes is same as length of fc_bias)
-        num_classes = self.fc_bias.shape[0]
-        one_hot_label = np.zeros(num_classes)
-        one_hot_label[true_label] = 1
+        # --- Output gradient ---
+        m = y_true.shape[0]
+        d_scores = self.cache['probs'] - y_true
 
-        # Compute loss (for monitoring)
-        loss = self.cross_entropy_loss(probabilities, one_hot_label)
+        # Output layer gradients
+        grads['output_w'] = self.cache['a2'].T @ d_scores / m
+        grads['output_b'] = np.sum(d_scores, axis=0) / m
 
-        # Backprop through softmax and fully connected layer:
-        # For softmax with cross-entropy, gradient at fc output:
-        dZ_fc = probabilities - one_hot_label  # shape: (num_classes,)
-        dA_flat, dW_fc, db_fc = self.fc_backward(dZ_fc, self.cache["fc"])
-        # Update fully connected parameters:
-        self.fc_weights -= learning_rate * dW_fc
-        self.fc_bias -= learning_rate * db_fc
+        d_a2 = d_scores @ self.output_weights.T
 
-        # Reshape dA_flat to match the shape of the final conv output:
-        dA = dA_flat.reshape(self.cache["A_final"].shape)
+        # Dropout 2 backward
+        if self.cache['drop2'] is not None:
+            d_a2 *= self.cache['drop2']
 
-        # Backpropagate through convolution blocks in reverse order:
-        L = len(self.filters_list)
-        for l in reversed(range(L)):
-            # Pooling backward:
-            dA = self.pool_backward(dA, self.cache[f"pool_{l}"])
-            # ELU backward (replaces ReLU backward)
-            dZ = self.elu_backward(dA, self.cache[f"elu_{l}"])
-            # Convolution backward:
-            dA, dW, db = self.conv_backward(dZ, self.cache[f"conv_{l}"])
-            # Update convolution parameters:
-            self.filters_list[l] -= learning_rate * dW
-            self.biases_list[l] -= learning_rate * db
+        # FC2 backward
+        d_z2 = d_a2 * relu_derivative(self.cache['z2'])
+        grads['fc_w2'] = self.cache['a1'].T @ d_z2 / m
+        grads['fc_b2'] = np.sum(d_z2, axis=0) / m
+        d_a1 = d_z2 @ self.fc_weights[1].T
 
-            # Print gradients to check for vanishing or exploding gradients
-            # print(f"Layer {l}:")
-            # print(f"dW (mean, std): {np.mean(dW):.6f}, {np.std(dW):.6f}")
-            # print(f"db: {db:.6f}")
+        # Dropout 1 backward
+        if self.cache['drop1'] is not None:
+            d_a1 *= self.cache['drop1']
 
-        return loss
+        # FC1 backward
+        d_z1 = d_a1 * relu_derivative(self.cache['z1'])
+
+        # print("flat.T shape:", self.cache['flat'].T.shape)
+        # print("d_z1 shape:", d_z1.shape)
+
+
+        grads['fc_w1'] = self.cache['flat'].T @ d_z1 / m
+        grads['fc_b1'] = np.sum(d_z1, axis=0) / m
+        d_flat = d_z1 @ self.fc_weights[0].T
+        d_conv_out = d_flat.reshape(self.flatten_shape)
+
+        # --- Conv & Pooling backward ---
+        for i in reversed(range(4)):
+            # Dropout backward
+            drop_mask = self.cache['dropout'][i]
+            if drop_mask is not None:
+                d_conv_out *= drop_mask
+
+            # Max pool backward
+            conv_out, pool_cache = self.cache['conv'][i]
+            d_relu = max_pool_backward(d_conv_out, pool_cache)
+
+            # ReLU backward
+
+            pre_relu = self.cache['pre_relu'][i]
+            d_bn = d_relu * relu_derivative(pre_relu)
+
+
+            # Batch norm backward
+            d_bn, d_gamma, d_beta = batch_norm_backward(d_bn, self.cache['bn'][i])
+            grads[f'gamma_{i}'] = d_gamma
+            grads[f'beta_{i}'] = d_beta
+
+            # Conv backward
+
+            conv_input = self.cache['conv_input'][i]
+            d_conv_out, dfilt, dbias = conv2d_backward(d_bn, conv_input, self.filters_list[i])
+
+            grads[f'filt_{i}'] = dfilt / m
+            grads[f'bias_{i}'] = dbias / m
+
+
+        # --- Update weights ---
+        self.fc_weights[0] -= learning_rate * grads['fc_w1']
+        self.fc_bias[0] -= learning_rate * grads['fc_b1']
+        self.fc_weights[1] -= learning_rate * grads['fc_w2']
+        self.fc_bias[1] -= learning_rate * grads['fc_b2']
+
+
+        # Update output layer weights and biases
+        self.output_weights -= learning_rate * grads['output_w']
+        self.output_bias -= learning_rate * grads['output_b']
+
+        for i in range(4):
+            self.filters_list[i] -= learning_rate * grads[f'filt_{i}']
+            self.biases_list[i] -= learning_rate * grads[f'bias_{i}']
+            self.gamma[i] -= learning_rate * grads[f'gamma_{i}']
+            self.beta[i] -= learning_rate * grads[f'beta_{i}']

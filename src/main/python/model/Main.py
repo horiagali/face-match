@@ -6,33 +6,7 @@ from tqdm import tqdm
 from Data_loader import load_and_preprocess_data
 from emotion_cnn import EmotionCNN
 
-def load_model(filename, K_size=3, num_layers=4, output_size=7):
-    """Loads model parameters and hyperparameters from a .npz file, but always uses random filters."""
-    data = np.load(filename, allow_pickle=True)
-    hyperparams = json.loads(data['hyperparams'].item())
 
-    # Load filters and biases for each convolutional layer
-    filters = [np.array(f) for f in data['filters']]
-    biases = [np.array(b) for b in data['biases']]
-
-    # Initialize the model with loaded filters and biases
-    model = EmotionCNN(
-        K_size=K_size,
-        num_layers=num_layers,
-        output_size=output_size
-    )
-
-    # Assign the loaded filters and biases to the model
-    for i in range(num_layers):
-        model.conv_params[i]["W"] = filters[i]
-        model.conv_params[i]["b"] = biases[i]
-
-    # Load the fully connected layer weights and biases
-    model.fc1_W = data['fc_weights']
-    model.fc1_b = data['fc_bias']
-    
-    # Return the model with loaded parameters
-    return model
 
 
 
